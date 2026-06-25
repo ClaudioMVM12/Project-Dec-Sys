@@ -1,5 +1,5 @@
 % =========================================================================
-% DECISION SYSTEMS PROJECT - THE ULTIMATE SYNTHESIS
+% DECISION SYSTEMS PROJECT
 % -------------------------------------------------------------------------
 % - Trajectory Splines via Parametric Omega Matrix Inversion
 % - Kalman Filter with Joseph-Form Covariance for Bias Estimation
@@ -14,14 +14,14 @@ clear; clc; close all;
 fprintf('Initializing Spacecraft Parameters...\n');
 G    = 6.674e-11;       
 mE   = 5.972e24;        
-mu   = G * mE;            % (we learnt that this in orbital dynamics) grav. parameter
+mu   = G * mE;            % Gravitational parameter
 RT   = 7171e3;          
 mC   = 2000;            
 h    = 10;                % 10s simulation step
-Tsim = 3600;              % 1 hour rendezvous ;)
+Tsim = 3600;              % 1 hour rendezvous duration
 x0_LVLH = [0; 0; 100e3; 0; 0; 0]; 
 
-omega = sqrt(mu / RT^3);  % mean orbital angu. vel.
+omega = sqrt(mu / RT^3);  % Mean orbital angular velocity
 
 % CW Linear State-Space Model (Clohessy-Wiltshire Equations)
 A_cw = [0, 0, 0, 1, 0, 0;
@@ -60,36 +60,60 @@ options_ode = odeset('RelTol', 1e-9, 'AbsTol', 1e-9);
 [~, X_C_ECI] = ode45(@(t,x) [x(4:6); -(mu/norm(x(1:3))^3)*x(1:3)], t_vec, [rC0_ECI; vC0_ECI], options_ode);
 X_T_ECI = X_T_ECI'; X_C_ECI = X_C_ECI';
 
-%% ========================================================================
-% QUESTION 2: BIAS ESTIMATION VIA  KALMAN FILTER
-% =========================================================================
-fprintf('--- Q2: Actuator Bias Estimation ( Kalman Filter) ---\n');
+% Reconstruct the relative LVLH trajectory from the ECI simulation data
+% to compare natural orbital mechanics against linearized drift.
+X_rel_LVLH = zeros(3, N_steps);
+for k = 1:N_steps
+    rT_k = X_T_ECI(1:3, k);
+    vT_k = X_T_ECI(4:6, k);
+    
+    iz_k = rT_k / norm(rT_k); % Radial vector
+    iy_k = cross(rT_k, vT_k) / norm(cross(rT_k, vT_k)); % Angular momentum normal
+    
+    % Invert cross product order to match positive velocity vector direction
+    ix_k = cross(iz_k, iy_k); 
+    
+    R_L2E_k = [ix_k, iy_k, iz_k];
+    r_rel_ECI = X_C_ECI(1:3, k) - rT_k;
+    X_rel_LVLH(:, k) = R_L2E_k' * r_rel_ECI; 
+end
 
-b_true = [2.5; -1.2; 0.7];    %const. bias (don't fuck with this claudio)
+X_linear_CW = zeros(6, N_steps);
+X_linear_CW(:, 1) = x0_LVLH; 
+for k = 1:N_steps-1
+    X_linear_CW(:, k+1) = Ad * X_linear_CW(:, k); % Discrete state propagation
+end
+
+%% ========================================================================
+% QUESTION 2: BIAS ESTIMATION VIA KALMAN FILTER
+% =========================================================================
+fprintf('--- Q2: Actuator Bias Estimation (Kalman Filter) ---\n');
+
+b_true = [2.5; -1.2; 0.7];    % Constant bias
 noise_accel_std = 0.005; 
 sigma_pos = 0.1;         
 
 % Exact variance of the scaled measurement noise (F = m * a)
 R_variance = (mC * noise_accel_std)^2; 
 
-%  Kalman Filter Initialization
+% Kalman Filter Initialization
 b_kf = zeros(3, N_steps);
-b_kf(:,1) = [0; 0; 0]; % Initial guess
+b_kf(:,1) = [0; 0; 0];     % Initial guess
 Sigma = cell(1, N_steps);
 Sigma{1} = 100 * eye(3);   % Initial covariance
 R_kf = eye(3) * R_variance;
-Q_kf = eye(3) * 1e-4;      % Tiny process noise to keep filter active
+Q_kf = eye(3) * 1e-4;      % Process noise
 I_3 = eye(3); 
 
 x_curr = x0_LVLH;
 u_cmd = [1; 0; -1] .* ones(1, N_steps); 
 
 for k = 1:N_steps-1
-    % Physical Reality
+    % Physical Plant Update
     u_real = u_cmd(:, k) + b_true; 
     xdot_true = A_cw * x_curr + B_cw * u_real; 
     
-    % Realistic Noisy Measurements
+    % Noisy Measurements
     x_meas = x_curr + randn(6,1) * sigma_pos;       
     xdot_meas = xdot_true + randn(6,1) * noise_accel_std; 
     
@@ -97,7 +121,7 @@ for k = 1:N_steps-1
     y_meas_k = mC * (xdot_meas(4:6) - A_cw(4:6, :) * x_meas) - u_cmd(:, k);
     H_k = eye(3); 
     
-    % ---  Kalman Filter Algorithm ---
+    % --- Kalman Filter Algorithm ---
     % Predict
     b_pred = b_kf(:, k); 
     Sigma_pred = Sigma{k} + Q_kf;
@@ -108,7 +132,7 @@ for k = 1:N_steps-1
     K = Sigma_pred * H_k' / S;
     b_kf(:, k+1) = b_pred + K * y_tilde;
     
-    % Highly stable Joseph Form for Covariance Update 
+    % Joseph Form for Covariance Update 
     Sigma{k+1} = (I_3 - K * H_k) * Sigma_pred * (I_3 - K * H_k)' + K * R_kf * K';
     
     x_curr = Ad * x_curr + Bd * u_real;
@@ -122,7 +146,7 @@ for k = 1:N_steps
 end
 
 %% ========================================================================
-% QUESTION 3 & 4:  SPLINE OPTIMIZATION & LQR TRACKING
+% QUESTION 3 & 4: SPLINE OPTIMIZATION & LQR TRACKING
 % =========================================================================
 fprintf('\n--- Q3 & Q4: Control, Observation, and Replanning ---\n');
 
@@ -131,22 +155,22 @@ Q_noise = eye(6) * 1e-4;
 R_noise = eye(3) * 10;          
 L_gain = dlqe(Ad, eye(6), Cd_obs, Q_noise, R_noise); 
 
-% LQR Controller Design (Tuned perfectly so error is practically 0)
+% LQR Controller Design
 Q_lqr = diag([1e3, 1e3, 1e3, 1e4, 1e4, 1e4]); 
 R_lqr = eye(3) * 1e3;                      
 K_lqr = dlqr(Ad, Bd, Q_lqr, R_lqr);
 
-% Obstacle Definition (can be changed whenever you feel)
+% Obstacle Definition 
 obs_pos = [0; 0; 30e3]; 
 r_obs = 20e3; 
 safe_radius = r_obs + 2e3;  
 
-% SMART INITIAL GUESS: 15 parameters allowing infinite morphing of the dodge curve.
+% Initial guess: 15 parameters allowing morphing of the dodge curve.
 % C(1:3) represent peak deviations in X, Y, Z. The rest warp the shape.
 C0 = zeros(15, 1);
 C0(2) = 25e3; % Starting with a cross-track (Y) bias.
 
-% UPGRADED OPTIMIZATION: sqp pushed to maximum depth
+% Optimization options
 options = optimoptions('fmincon', 'Display', 'iter', 'Algorithm', 'sqp', ...
     'MaxFunctionEvaluations', 50000, 'MaxIterations', 2000, ...
     'OptimalityTolerance', 1e-6, 'StepTolerance', 1e-8);
@@ -162,13 +186,13 @@ C_opt = fmincon(@(C) cost_func(C, x0_LVLH, Tsim, h, omega, mC), C0, ...
 fprintf('Optimal Avoidance Deviations -> X: %.1f km, Y: %.1f km, Z: %.1f km\n', C_opt(1)/1e3, C_opt(2)/1e3, C_opt(3)/1e3);
 
 % Generate the Final Reference Trajectory via Smooth Splines
-[X_ref, U_ff] = build_smooth_trajectory(C_opt, x0_LVLH, Tsim, h, omega, mC);
+[X_ref, U_ff] = build_lab2_trajectory(C_opt, x0_LVLH, Tsim, h, omega, mC);
 
 % Closed-Loop LQR Simulation
 x_true = zeros(6, N_steps);  x_true(:,1) = x0_LVLH;
 x_hat  = zeros(6, N_steps);  x_hat(:,1)  = x0_LVLH + [200; -200; 200; 0; 0; 0]; 
 u_q4   = zeros(3, N_steps);
-b_est  = b_kf(:, end); % Final KF bias estimate
+b_est  = b_kf(:, end);       % Final KF bias estimate
 
 for k = 1:N_steps-1
     e_k = x_hat(:, k) - X_ref(:, k);
@@ -223,9 +247,22 @@ title('\color{white}Macro Reality: ECI Frame', 'FontSize', 16);
 legend('\color{white}Earth', '\color{white}Atmosphere', '\color{white}Target', '\color{white}Chaser', 'Location', 'best', 'Color', 'k');
 axis equal; view(-25, 25); grid on;
 
-% PLOT 2:  KALMAN FILTER CONVERGENCE
-figure('Name', 'PLOT 2: KF Convergence', 'Color', 'w', 'Position', [100, 100, 900, 600]);
-sgtitle(' Kalman Filter Bias Estimation (Joseph Form)', 'FontSize', 16, 'FontWeight', 'bold');
+% PLOT 2: Diagnostic Comparison Plot
+figure('Name', 'Q1: Nonlinear vs Linear CW Propagation', 'Color', 'w', 'Position', [80, 80, 900, 550]);
+plot(X_rel_LVLH(1,:)/1e3, X_rel_LVLH(3,:)/1e3, 'b-', 'LineWidth', 3, 'DisplayName', 'True Nonlinear (ECI Mapped)');
+hold on;
+plot(X_linear_CW(1,:)/1e3, X_linear_CW(3,:)/1e3, 'r--', 'LineWidth', 2.5, 'DisplayName', 'Linearized CW Approximation');
+plot(0, 0, 'yp', 'MarkerSize', 15, 'MarkerFaceColor', 'y', 'Color', 'k', 'DisplayName', 'Target Origin');
+grid on; axis equal;
+xlabel('Along-Track X (Direction of Flight) [km]', 'FontWeight', 'bold');
+ylabel('Radial Z (Altitude Delta) [km]', 'FontWeight', 'bold');
+title('Model Breakdown: Real Physics vs Linearized Drift from 100 km', 'FontSize', 14);
+legend('Location', 'best');
+text(x0_LVLH(1)/1e3, x0_LVLH(3)/1e3, ' \leftarrow Start Position (100km Alt)', 'FontWeight', 'bold');
+
+% PLOT 3: KALMAN FILTER CONVERGENCE
+figure('Name', 'PLOT 3: KF Convergence', 'Color', 'w', 'Position', [100, 100, 900, 600]);
+sgtitle('Kalman Filter Bias Estimation (Joseph Form)', 'FontSize', 16, 'FontWeight', 'bold');
 axis_names = {'Along-Track (X)', 'Cross-Track (Y)', 'Radial (Z)'};
 colors_bias = {c_red, c_gren, c_blue};
 for i = 1:3
@@ -244,8 +281,8 @@ for i = 1:3
     if i==1, legend('3\sigma Bound', 'KF Estimate', 'Truth', 'Location', 'northeast'); end
 end
 
-% PLOT 3: 3D OBSTACLE AVOIDANCE (SMOOTH  SPLINE)
-figure('Name', 'PLOT 3: 3D Dodge', 'Color', 'k', 'Position', [150, 150, 800, 600]);
+% PLOT 4: 3D OBSTACLE AVOIDANCE (SMOOTH SPLINE)
+figure('Name', 'PLOT 4: 3D Dodge', 'Color', 'k', 'Position', [150, 150, 800, 600]);
 [Xs, Ys, Zs] = sphere(50);
 surf(Xs*r_obs/1e3 + obs_pos(1)/1e3, Ys*r_obs/1e3 + obs_pos(2)/1e3, Zs*r_obs/1e3 + obs_pos(3)/1e3, 'FaceColor', [1 0.1 0.1], 'FaceAlpha', 0.3, 'EdgeColor', 'none'); hold on;
 surf(Xs*(r_obs*0.8)/1e3 + obs_pos(1)/1e3, Ys*(r_obs*0.8)/1e3 + obs_pos(2)/1e3, Zs*(r_obs*0.8)/1e3 + obs_pos(3)/1e3, 'FaceColor', [0.8 0 0], 'FaceAlpha', 0.8, 'EdgeColor', 'none');
@@ -254,12 +291,12 @@ plot3(X_ref(1,:)/1e3, X_ref(2,:)/1e3, X_ref(3,:)/1e3, 'Color', c_gren, 'LineStyl
 plot3(x_true(1,:)/1e3, x_true(2,:)/1e3, x_true(3,:)/1e3, 'Color', c_cyan, 'LineWidth', 3);
 plot3(0, 0, 0, 'w*', 'MarkerSize', 15, 'LineWidth', 2);
 set(gca, 'Color', 'k', 'XColor', 'w', 'YColor', 'w', 'ZColor', 'w');
-title('\color{white}Optimal 3D Obstacle Avoidance ( Spline)', 'FontSize', 16);
+title('\color{white}Optimal 3D Obstacle Avoidance (Spline)', 'FontSize', 16);
 legend('\color{white}Safe Zone', '\color{white}Obstacle', '\color{white}Spline Ref', '\color{white}True Path', '\color{white}Target', 'Color', 'k', 'Location', 'best');
 grid on; axis equal; view(-35, 20);
 
-% PLOT 4: ORTHOGONAL PROJECTIONS
-figure('Name', 'PLOT 4: Safety Proof', 'Color', 'w', 'Position', [200, 200, 900, 450]);
+% PLOT 5: ORTHOGONAL PROJECTIONS
+figure('Name', 'PLOT 5: Safety Proof', 'Color', 'w', 'Position', [200, 200, 900, 450]);
 theta_circ = linspace(0, 2*pi, 100); circ_x = r_obs/1e3 * cos(theta_circ); circ_y = r_obs/1e3 * sin(theta_circ);
 subplot(1,2,1); 
 fill(obs_pos(1)/1e3 + circ_x, obs_pos(3)/1e3 + circ_y, c_red, 'FaceAlpha', 0.2, 'EdgeColor', c_red, 'LineWidth', 1.5); hold on;
@@ -273,8 +310,8 @@ plot(X_ref(2,:)/1e3, X_ref(3,:)/1e3, 'Color', c_gren, 'LineStyle', '--', 'LineWi
 title('Front View (Y-Z Plane)'); xlabel('Cross-Track [km]'); ylabel('Radial [km]'); grid on; axis equal;
 sgtitle('Orthogonal Projections: Proof of Safe Spline Clearance', 'FontSize', 16, 'FontWeight', 'bold');
 
-% PLOT 5: SMOOTH THRUST PROFILES
-figure('Name', 'PLOT 5: Spline Thrust', 'Color', 'w', 'Position', [250, 250, 800, 500]);
+% PLOT 6: SMOOTH THRUST PROFILES
+figure('Name', 'PLOT 6: Spline Thrust', 'Color', 'w', 'Position', [250, 250, 800, 500]);
 plot(t_vec, u_q4(1,:), 'Color', c_red, 'LineWidth', 1.5); hold on;
 plot(t_vec, u_q4(2,:), 'Color', c_gren, 'LineWidth', 1.5);
 plot(t_vec, u_q4(3,:), 'Color', c_blue, 'LineWidth', 1.5);
@@ -283,12 +320,12 @@ subtitle(' Omega Matrix guarantees perfect C2 continuity -> Zero Thrust Spikes!'
 xlabel('Time [s]'); ylabel('Thrust Command [N]'); grid on;
 legend('U_x (Along)', 'U_y (Cross)', 'U_z (Radial)', 'Location', 'best');
 
-% PLOT 6: -STYLE LOG & LINEAR OBSERVER ERROR
-figure('Name', 'PLOT 6: Transient Error Analysis', 'Color', 'w', 'Position', [300, 200, 800, 600]);
+% PLOT 7: LINEAR OBSERVER ERROR
+figure('Name', 'PLOT 7: Transient Error Analysis', 'Color', 'w', 'Position', [300, 200, 800, 600]);
 obs_error_norm = vecnorm(x_true(1:3, :) - x_hat(1:3, :));
 subplot(2,1,1);
 plot(t_vec, obs_error_norm, 'Color', c_purp, 'LineWidth', 2);
-title('Observer Error Magnitude (Linear Scale)', 'FontSize', 14);
+title('Luenberger Observer Error Magnitude (Linear Scale)', 'FontSize', 14);
 ylabel('|| Error || [m]'); grid on; xlim([0 Tsim]);
 subplot(2,1,2);
 semilogy(t_vec, obs_error_norm, 'Color', c_purp, 'LineWidth', 2);
@@ -299,8 +336,8 @@ set(gca, 'YScale', 'log');
 %% 2. SPLINE OPTIMIZATION & LQR TRACKING
 disp('Optimizing Obstacle Avoidance Trajectory...');
 
-% Re-using the optimal C_opt so we don't double-solve identically
-[X_ref, U_ff] = build_smooth_trajectory(C_opt, x0_LVLH, Tsim, h, omega, mC);
+% Re-using the optimal C_opt
+[X_ref, U_ff] = build_lab2_trajectory(C_opt, x0_LVLH, Tsim, h, omega, mC);
 
 % Closed-Loop Simulation
 x_true = zeros(6, N_steps);  
@@ -354,7 +391,7 @@ xlim([min(all_x)-pad_x, max(all_x)+pad_x]);
 ylim([min(all_y)-pad_y, max(all_y)+pad_y]); 
 zlim([min(all_z)-pad_z, max(all_z)+pad_z]);
 
-% Animation Loop!
+% Animation Loop
 for k = 1:2:N_steps
     set(chaser_plot, 'XData', x_true(1,k)/1e3, 'YData', x_true(2,k)/1e3, 'ZData', x_true(3,k)/1e3);
     set(trail_plot, 'XData', x_true(1,1:k)/1e3, 'YData', x_true(2,1:k)/1e3, 'ZData', x_true(3,1:k)/1e3);
@@ -363,10 +400,10 @@ for k = 1:2:N_steps
 end
 
 %% ========================================================================
-% : PARAMETRIC SPLINE GENERATOR (15-DOF Multi-Basis Model)
+% PARAMETRIC SPLINE GENERATOR (15-DOF Multi-Basis Model)
 % =========================================================================
 
-function [X_ref, U_ff] = build_smooth_trajectory(C, x0_vec, T, h, omega, mC)
+function [X_ref, U_ff] = build_lab2_trajectory(C, x0_vec, T, h, omega, mC)
     % Generates a trajectory using a 5th order nominal polynomial for Z
     % and a 15-DOF (5 per axis) orthogonal-ish basis.
     % Base shape guarantees C^2 continuity (pos=0, vel=0, acc=0) at boundaries.
@@ -412,8 +449,7 @@ function [X_ref, U_ff] = build_smooth_trajectory(C, x0_vec, T, h, omega, mC)
         dSi  = dS_b .* P + S_b .* dP;
         ddSi = ddS_b .* P + 2 .* dS_b .* dP + S_b .* ddP;
         
-        % Maintain perfectly accurate indexing for the user's print statements:
-        % C(1)=X_mid, C(2)=Y_mid, C(3)=Z_mid.
+        % Maintain accurate indexing for parameters
         if i == 1
             idx_x = 1; idx_y = 2; idx_z = 3;
         else
@@ -459,18 +495,18 @@ function [X_ref, U_ff] = build_smooth_trajectory(C, x0_vec, T, h, omega, mC)
 end
 
 function cost = cost_func(C, x0_vec, T, h, omega, mC)
-    [~, U_ff] = build_smooth_trajectory(C, x0_vec, T, h, omega, mC);
+    [~, U_ff] = build_lab2_trajectory(C, x0_vec, T, h, omega, mC);
     
-    % SMOOTH PSEUDO-HUBER L1-NORM (Crucial for deep fmincon convergence)
+    % Smooth Pseudo-Huber L1-Norm 
     epsilon = 1e-3; 
     cost = sum(sqrt(U_ff.^2 + epsilon^2), 'all') * h; 
 end
 
 function [c, ceq] = param_constraint(C, x0_vec, T, h, obs_pos, safe_r)
-    [X_ref, ~] = build_smooth_trajectory(C, x0_vec, T, h, 0, 0); 
+    [X_ref, ~] = build_lab2_trajectory(C, x0_vec, T, h, 0, 0); 
     
-    % VECTORIZED SMOOTH CONSTRAINT: Evaluates all time steps safely
+    % Vectorized distance constraint 
     dist_squared = (X_ref(1,:) - obs_pos(1)).^2 + (X_ref(2,:) - obs_pos(2)).^2 + (X_ref(3,:) - obs_pos(3)).^2;
-    c = safe_r^2 - dist_squared; % c <= 0 enforces safe_r^2 <= dist_squared
+    c = safe_r^2 - dist_squared; 
     ceq = []; 
 end
