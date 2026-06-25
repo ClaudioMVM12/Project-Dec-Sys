@@ -1,5 +1,5 @@
 % =========================================================================
-% DECISION SYSTEMS PROJECT - THE ULTIMATE SYNTHESIS
+% DECISION SYSTEMS PROJECT
 % -------------------------------------------------------------------------
 % - Trajectory Splines via Parametric Omega Matrix Inversion
 % - Kalman Filter with Joseph-Form Covariance for Bias Estimation
@@ -14,14 +14,14 @@ clear; clc; close all;
 fprintf('Initializing Spacecraft Parameters...\n');
 G    = 6.674e-11;       
 mE   = 5.972e24;        
-mu   = G * mE;            % (we learnt that this in orbital dynamics) grav. parameter
+mu   = G * mE;            % Gravitational parameter
 RT   = 7171e3;          
 mC   = 2000;            
 h    = 10;                % 10s simulation step
-Tsim = 3600;              % 1 hour rendezvous ;)
+Tsim = 3600;              % 1 hour rendezvous duration
 x0_LVLH = [0; 0; 100e3; 0; 0; 0]; 
 
-omega = sqrt(mu / RT^3);  % mean orbital angu. vel.
+omega = sqrt(mu / RT^3);  % Mean orbital angular velocity
 
 % CW Linear State-Space Model (Clohessy-Wiltshire Equations)
 A_cw = [0, 0, 0, 1, 0, 0;
@@ -61,35 +61,35 @@ options_ode = odeset('RelTol', 1e-9, 'AbsTol', 1e-9);
 X_T_ECI = X_T_ECI'; X_C_ECI = X_C_ECI';
 
 %% ========================================================================
-% QUESTION 2: BIAS ESTIMATION VIA  KALMAN FILTER
+% QUESTION 2: BIAS ESTIMATION VIA KALMAN FILTER
 % =========================================================================
-fprintf('--- Q2: Actuator Bias Estimation ( Kalman Filter) ---\n');
+fprintf('--- Q2: Actuator Bias Estimation (Kalman Filter) ---\n');
 
-b_true = [2.5; -1.2; 0.7];    %const. bias (don't fuck with this claudio)
+b_true = [2.5; -1.2; 0.7];    % Constant bias
 noise_accel_std = 0.005; 
 sigma_pos = 0.1;         
 
 % Exact variance of the scaled measurement noise (F = m * a)
 R_variance = (mC * noise_accel_std)^2; 
 
-%  Kalman Filter Initialization
+% Kalman Filter Initialization
 b_kf = zeros(3, N_steps);
-b_kf(:,1) = [0; 0; 0]; % Initial guess
+b_kf(:,1) = [0; 0; 0];     % Initial guess
 Sigma = cell(1, N_steps);
 Sigma{1} = 100 * eye(3);   % Initial covariance
 R_kf = eye(3) * R_variance;
-Q_kf = eye(3) * 1e-4;      % Tiny process noise to keep filter active
+Q_kf = eye(3) * 1e-4;      % Process noise
 I_3 = eye(3); 
 
 x_curr = x0_LVLH;
 u_cmd = [1; 0; -1] .* ones(1, N_steps); 
 
 for k = 1:N_steps-1
-    % Physical Reality
+    % Physical Plant Update
     u_real = u_cmd(:, k) + b_true; 
     xdot_true = A_cw * x_curr + B_cw * u_real; 
     
-    % Realistic Noisy Measurements
+    % Noisy Measurements
     x_meas = x_curr + randn(6,1) * sigma_pos;       
     xdot_meas = xdot_true + randn(6,1) * noise_accel_std; 
     
@@ -97,7 +97,7 @@ for k = 1:N_steps-1
     y_meas_k = mC * (xdot_meas(4:6) - A_cw(4:6, :) * x_meas) - u_cmd(:, k);
     H_k = eye(3); 
     
-    % ---  Kalman Filter Algorithm ---
+    % --- Kalman Filter Algorithm ---
     % Predict
     b_pred = b_kf(:, k); 
     Sigma_pred = Sigma{k} + Q_kf;
@@ -108,7 +108,7 @@ for k = 1:N_steps-1
     K = Sigma_pred * H_k' / S;
     b_kf(:, k+1) = b_pred + K * y_tilde;
     
-    % Highly stable Joseph Form for Covariance Update (from )
+    % Joseph Form for Covariance Update
     Sigma{k+1} = (I_3 - K * H_k) * Sigma_pred * (I_3 - K * H_k)' + K * R_kf * K';
     
     x_curr = Ad * x_curr + Bd * u_real;
@@ -122,7 +122,7 @@ for k = 1:N_steps
 end
 
 %% ========================================================================
-% QUESTION 3 & 4:  SPLINE OPTIMIZATION & LQR TRACKING
+% QUESTION 3 & 4: SPLINE OPTIMIZATION & LQR TRACKING
 % =========================================================================
 fprintf('\n--- Q3 & Q4: Control, Observation, and Replanning ---\n');
 
@@ -131,20 +131,19 @@ Q_noise = eye(6) * 1e-4;
 R_noise = eye(3) * 10;          
 L_gain = dlqe(Ad, eye(6), Cd_obs, Q_noise, R_noise); 
 
-% LQR Controller Design (Tuned perfectly so error is practically 0)
+% LQR Controller Design
 Q_lqr = diag([1e3, 1e3, 1e3, 1e4, 1e4, 1e4]); 
 R_lqr = eye(3) * 1e3;                      
 K_lqr = dlqr(Ad, Bd, Q_lqr, R_lqr);
 
-% Obstacle Definition (can change these to test ANY obstacle scenario!)
-% Dang!!, the freaking power of "fmincon" optimization 
+% Obstacle Definition
 obs_pos = [0; 0; 30e3]; 
 r_obs = 20e3; 
 safe_radius = r_obs + 2e3; 
 
 C0 = [15e3; 15e3]; % Initial guess
 
-% Optimize the  Spline formulation
+% Optimize the Spline formulation
 options = optimoptions('fmincon', 'Display', 'iter', 'Algorithm', 'sqp', 'MaxFunctionEvaluations', 2000);
 C_opt = fmincon(@(C) cost_func(C, x0_LVLH(3), Tsim, h, omega, mC), C0, ...
     [], [], [], [], [-120e3, -120e3], [120e3, 120e3], ...
@@ -152,7 +151,7 @@ C_opt = fmincon(@(C) cost_func(C, x0_LVLH(3), Tsim, h, omega, mC), C0, ...
 
 fprintf('Optimal Avoidance Deviations -> X: %.1f km, Y: %.1f km\n', C_opt(1)/1e3, C_opt(2)/1e3);
 
-% Generate the Final Reference Trajectory via  Omega Matrix
+% Generate the Final Reference Trajectory via Omega Matrix
 [X_ref, U_ff] = build_lab2_trajectory(C_opt, x0_LVLH(3), Tsim, h, omega, mC);
 
 % Closed-Loop LQR Simulation
@@ -193,8 +192,9 @@ fprintf('Fuel Mass Consumed                   : %.2f kg\n', mass_spent_kg);
 fprintf('Fuel Volume Consumed                 : %.2f Liters (%.0f mL)\n', vol_spent_L, vol_spent_mL);
 fprintf('Mean Squared Tracking Error (LQR)    : %.4f m^2\n', MSE_track);
 fprintf('Mean Squared Observer Error (Luenberger) : %.4f m^2\n', MSE_obs);
+
 %% ========================================================================
-% ULTIMATE PLOTTING SUITE (Presentation Ready)
+% PLOTTING SUITE
 % =========================================================================
 c_blue = [0.0, 0.45, 0.74]; c_red  = [0.85, 0.33, 0.10]; 
 c_gren = [0.47, 0.67, 0.19]; c_cyan = [0.30, 0.75, 0.93];
@@ -213,9 +213,9 @@ title('\color{white}Macro Reality: ECI Frame', 'FontSize', 16);
 legend('\color{white}Earth', '\color{white}Atmosphere', '\color{white}Target', '\color{white}Chaser', 'Location', 'best', 'Color', 'k');
 axis equal; view(-25, 25); grid on;
 
-% PLOT 2:  KALMAN FILTER CONVERGENCE
+% PLOT 2: KALMAN FILTER CONVERGENCE
 figure('Name', 'PLOT 2: KF Convergence', 'Color', 'w', 'Position', [100, 100, 900, 600]);
-sgtitle(' Kalman Filter Bias Estimation (Joseph Form)', 'FontSize', 16, 'FontWeight', 'bold');
+sgtitle('Kalman Filter Bias Estimation (Joseph Form)', 'FontSize', 16, 'FontWeight', 'bold');
 axis_names = {'Along-Track (X)', 'Cross-Track (Y)', 'Radial (Z)'};
 colors_bias = {c_red, c_gren, c_blue};
 for i = 1:3
@@ -231,7 +231,7 @@ for i = 1:3
     if i==1, legend('3\sigma Bound', 'KF Estimate', 'Truth', 'Location', 'northeast'); end
 end
 
-% PLOT 3: 3D OBSTACLE AVOIDANCE (SMOOTH  SPLINE)
+% PLOT 3: 3D OBSTACLE AVOIDANCE (SMOOTH SPLINE)
 figure('Name', 'PLOT 3: 3D Dodge', 'Color', 'k', 'Position', [150, 150, 800, 600]);
 [Xs, Ys, Zs] = sphere(50);
 surf(Xs*r_obs/1e3 + obs_pos(1)/1e3, Ys*r_obs/1e3 + obs_pos(2)/1e3, Zs*r_obs/1e3 + obs_pos(3)/1e3, 'FaceColor', [1 0.1 0.1], 'FaceAlpha', 0.3, 'EdgeColor', 'none'); hold on;
@@ -241,7 +241,7 @@ plot3(X_ref(1,:)/1e3, X_ref(2,:)/1e3, X_ref(3,:)/1e3, 'Color', c_gren, 'LineStyl
 plot3(x_true(1,:)/1e3, x_true(2,:)/1e3, x_true(3,:)/1e3, 'Color', c_cyan, 'LineWidth', 3);
 plot3(0, 0, 0, 'w*', 'MarkerSize', 15, 'LineWidth', 2);
 set(gca, 'Color', 'k', 'XColor', 'w', 'YColor', 'w', 'ZColor', 'w');
-title('\color{white}Optimal 3D Obstacle Avoidance ( Spline)', 'FontSize', 16);
+title('\color{white}Optimal 3D Obstacle Avoidance (Spline)', 'FontSize', 16);
 legend('\color{white}Safe Zone', '\color{white}Obstacle', '\color{white}Spline Ref', '\color{white}True Path', '\color{white}Target', 'Color', 'k', 'Location', 'best');
 grid on; axis equal; view(-35, 20);
 
@@ -270,7 +270,7 @@ subtitle(' Omega Matrix guarantees perfect C2 continuity -> Zero Thrust Spikes!'
 xlabel('Time [s]'); ylabel('Thrust Command [N]'); grid on;
 legend('U_x (Along)', 'U_y (Cross)', 'U_z (Radial)', 'Location', 'best');
 
-% PLOT 6: -STYLE LOG & LINEAR OBSERVER ERROR
+% PLOT 6: LINEAR OBSERVER ERROR
 figure('Name', 'PLOT 6: Transient Error Analysis', 'Color', 'w', 'Position', [300, 200, 800, 600]);
 obs_error_norm = vecnorm(x_true(1:3, :) - x_hat(1:3, :));
 subplot(2,1,1);
@@ -283,8 +283,6 @@ title('Initial Convergence Transient (Logarithmic Scale)', 'FontSize', 14);
 xlabel('Time [s]'); ylabel('|| Error || (Log)'); grid on; xlim([0 500]);
 set(gca, 'YScale', 'log');
 
-
-
 %% 2. SPLINE OPTIMIZATION & LQR TRACKING
 disp('Optimizing Obstacle Avoidance Trajectory...');
 
@@ -296,8 +294,6 @@ C_opt = fmincon(@(C) cost_func(C, x0_LVLH(3), Tsim, h, omega, mC), C0, ...
 
 % Generate the Reference Trajectory
 [X_ref, U_ff] = build_lab2_trajectory(C_opt, x0_LVLH(3), Tsim, h, omega, mC);
-
-
 
 % Closed-Loop Simulation
 x_true = zeros(6, N_steps);  
@@ -340,7 +336,7 @@ legend('\color{white}Danger Zone', '\color{white}Planned Path', '\color{white}Ta
 view(-45, 20);
 xlim([-30 160]); ylim([-30 30]); zlim([-10 110]);
 
-% Animation Loop!
+% Animation Loop
 for k = 1:2:N_steps
     set(chaser_plot, 'XData', x_true(1,k)/1e3, 'YData', x_true(2,k)/1e3, 'ZData', x_true(3,k)/1e3);
     set(trail_plot, 'XData', x_true(1,1:k)/1e3, 'YData', x_true(2,1:k)/1e3, 'ZData', x_true(3,1:k)/1e3);
@@ -348,10 +344,8 @@ for k = 1:2:N_steps
     pause(0.01);
 end
 
-
-
 %% ========================================================================
-% : PARAMETRIC SPLINE GENERATOR
+% PARAMETRIC SPLINE GENERATOR
 % =========================================================================
 
 function [X_ref, U_ff] = build_lab2_trajectory(C, z0, T, h, omega, mC)
@@ -387,7 +381,6 @@ function [X_ref, U_ff] = build_lab2_trajectory(C, z0, T, h, omega, mC)
     X_ref = [x; y; z; x_dot; y_dot; z_dot];
     
     % Inverse Dynamics (Feedforward Actuation) 
-    % [how many Newtons must my thrusters make right now to make this dream reality?]
     ux = mC * (x_ddot - 2*omega*z_dot);
     uy = mC * (y_ddot + omega^2 * y);
     uz = mC * (z_ddot - 3*omega^2 * z + 2*omega*x_dot);
@@ -397,7 +390,7 @@ end
 
 function cost = cost_func(C, z0, T, h, omega, mC)
     [~, U_ff] = build_lab2_trajectory(C, z0, T, h, omega, mC);
-    cost = sum(abs(U_ff), 'all'); % Try to use least fuel possible!
+    cost = sum(abs(U_ff), 'all'); % Minimize total control effort
 end
 
 function [c, ceq] = param_constraint(C, z0, T, h, obs_pos, safe_r)
