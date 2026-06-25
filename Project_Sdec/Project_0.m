@@ -60,6 +60,31 @@ options_ode = odeset('RelTol', 1e-9, 'AbsTol', 1e-9);
 [~, X_C_ECI] = ode45(@(t,x) [x(4:6); -(mu/norm(x(1:3))^3)*x(1:3)], t_vec, [rC0_ECI; vC0_ECI], options_ode);
 X_T_ECI = X_T_ECI'; X_C_ECI = X_C_ECI';
 
+
+% Reconstruct the relative LVLH trajectory from the ECI simulation data
+% to compare natural orbital mechanics against linearized drift.
+X_rel_LVLH = zeros(3, N_steps);
+for k = 1:N_steps
+    rT_k = X_T_ECI(1:3, k);
+    vT_k = X_T_ECI(4:6, k);
+    
+    iz_k = rT_k / norm(rT_k); % Radial vector
+    iy_k = cross(rT_k, vT_k) / norm(cross(rT_k, vT_k)); % Angular momentum normal
+    
+    % Invert cross product order to match positive velocity vector direction
+    ix_k = cross(iz_k, iy_k); 
+    
+    R_L2E_k = [ix_k, iy_k, iz_k];
+    r_rel_ECI = X_C_ECI(1:3, k) - rT_k;
+    X_rel_LVLH(:, k) = R_L2E_k' * r_rel_ECI; 
+end
+
+X_linear_CW = zeros(6, N_steps);
+X_linear_CW(:, 1) = x0_LVLH; 
+for k = 1:N_steps-1
+    X_linear_CW(:, k+1) = Ad * X_linear_CW(:, k); % Discrete state propagation
+end
+
 %% ========================================================================
 % QUESTION 2: BIAS ESTIMATION VIA KALMAN FILTER
 % =========================================================================
@@ -211,10 +236,24 @@ plot3(X_C_ECI(1,:)/1e3, X_C_ECI(2,:)/1e3, X_C_ECI(3,:)/1e3, 'Color', [0.93 0.69 
 set(gca, 'Color', 'k', 'XColor', 'w', 'YColor', 'w', 'ZColor', 'w');
 title('\color{white}Macro Reality: ECI Frame', 'FontSize', 16);
 legend('\color{white}Earth', '\color{white}Atmosphere', '\color{white}Target', '\color{white}Chaser', 'Location', 'best', 'Color', 'k');
-axis equal; view(-25, 25); grid on;
+view(-25, 25); grid on;
 
-% PLOT 2: KALMAN FILTER CONVERGENCE
-figure('Name', 'PLOT 2: KF Convergence', 'Color', 'w', 'Position', [100, 100, 900, 600]);
+% PLOT 2: Diagnostic Comparison Plot
+figure('Name', 'Q1: Nonlinear vs Linear CW Propagation', 'Color', 'w', 'Position', [80, 80, 900, 550]);
+plot(X_rel_LVLH(1,:)/1e3, X_rel_LVLH(3,:)/1e3, 'b-', 'LineWidth', 3, 'DisplayName', 'True Nonlinear (ECI Mapped)');
+hold on;
+plot(X_linear_CW(1,:)/1e3, X_linear_CW(3,:)/1e3, 'r--', 'LineWidth', 2.5, 'DisplayName', 'Linearized CW Approximation');
+plot(0, 0, 'yp', 'MarkerSize', 15, 'MarkerFaceColor', 'y', 'Color', 'k', 'DisplayName', 'Target Origin');
+
+grid on; axis equal;
+xlabel('Along-Track X (Direction of Flight) [km]', 'FontWeight', 'bold');
+ylabel('Radial Z (Altitude Delta) [km]', 'FontWeight', 'bold');
+title('Model Breakdown: Real Physics vs Linearized Drift from 100 km', 'FontSize', 14);
+legend('Location', 'best');
+text(x0_LVLH(1)/1e3, x0_LVLH(3)/1e3, ' \leftarrow Start Position (100km Alt)', 'FontWeight', 'bold');
+
+% PLOT 3: KALMAN FILTER CONVERGENCE
+figure('Name', 'PLOT 3: KF Convergence', 'Color', 'w', 'Position', [100, 100, 900, 600]);
 sgtitle('Kalman Filter Bias Estimation (Joseph Form)', 'FontSize', 16, 'FontWeight', 'bold');
 axis_names = {'Along-Track (X)', 'Cross-Track (Y)', 'Radial (Z)'};
 colors_bias = {c_red, c_gren, c_blue};
@@ -231,8 +270,8 @@ for i = 1:3
     if i==1, legend('3\sigma Bound', 'KF Estimate', 'Truth', 'Location', 'northeast'); end
 end
 
-% PLOT 3: 3D OBSTACLE AVOIDANCE (SMOOTH SPLINE)
-figure('Name', 'PLOT 3: 3D Dodge', 'Color', 'k', 'Position', [150, 150, 800, 600]);
+% PLOT 4: 3D OBSTACLE AVOIDANCE (SMOOTH SPLINE)
+figure('Name', 'PLOT 4: 3D Dodge', 'Color', 'k', 'Position', [150, 150, 800, 600]);
 [Xs, Ys, Zs] = sphere(50);
 surf(Xs*r_obs/1e3 + obs_pos(1)/1e3, Ys*r_obs/1e3 + obs_pos(2)/1e3, Zs*r_obs/1e3 + obs_pos(3)/1e3, 'FaceColor', [1 0.1 0.1], 'FaceAlpha', 0.3, 'EdgeColor', 'none'); hold on;
 surf(Xs*(r_obs*0.8)/1e3 + obs_pos(1)/1e3, Ys*(r_obs*0.8)/1e3 + obs_pos(2)/1e3, Zs*(r_obs*0.8)/1e3 + obs_pos(3)/1e3, 'FaceColor', [0.8 0 0], 'FaceAlpha', 0.8, 'EdgeColor', 'none');
@@ -245,8 +284,8 @@ title('\color{white}Optimal 3D Obstacle Avoidance (Spline)', 'FontSize', 16);
 legend('\color{white}Safe Zone', '\color{white}Obstacle', '\color{white}Spline Ref', '\color{white}True Path', '\color{white}Target', 'Color', 'k', 'Location', 'best');
 grid on; axis equal; view(-35, 20);
 
-% PLOT 4: ORTHOGONAL PROJECTIONS
-figure('Name', 'PLOT 4: Safety Proof', 'Color', 'w', 'Position', [200, 200, 900, 450]);
+% PLOT 5: ORTHOGONAL PROJECTIONS
+figure('Name', 'PLOT 5: Safety Proof', 'Color', 'w', 'Position', [200, 200, 900, 450]);
 theta_circ = linspace(0, 2*pi, 100); circ_x = r_obs/1e3 * cos(theta_circ); circ_y = r_obs/1e3 * sin(theta_circ);
 subplot(1,2,1); 
 fill(obs_pos(1)/1e3 + circ_x, obs_pos(3)/1e3 + circ_y, c_red, 'FaceAlpha', 0.2, 'EdgeColor', c_red, 'LineWidth', 1.5); hold on;
@@ -260,8 +299,8 @@ plot(X_ref(2,:)/1e3, X_ref(3,:)/1e3, 'Color', c_gren, 'LineStyle', '--', 'LineWi
 title('Front View (Y-Z Plane)'); xlabel('Cross-Track [km]'); ylabel('Radial [km]'); grid on; axis equal;
 sgtitle('Orthogonal Projections: Proof of Safe Spline Clearance', 'FontSize', 16, 'FontWeight', 'bold');
 
-% PLOT 5: SMOOTH THRUST PROFILES
-figure('Name', 'PLOT 5: Spline Thrust', 'Color', 'w', 'Position', [250, 250, 800, 500]);
+% PLOT 6: SMOOTH THRUST PROFILES
+figure('Name', 'PLOT 6: Spline Thrust', 'Color', 'w', 'Position', [250, 250, 800, 500]);
 plot(t_vec, u_q4(1,:), 'Color', c_red, 'LineWidth', 1.5); hold on;
 plot(t_vec, u_q4(2,:), 'Color', c_gren, 'LineWidth', 1.5);
 plot(t_vec, u_q4(3,:), 'Color', c_blue, 'LineWidth', 1.5);
@@ -270,12 +309,12 @@ subtitle(' Omega Matrix guarantees perfect C2 continuity -> Zero Thrust Spikes!'
 xlabel('Time [s]'); ylabel('Thrust Command [N]'); grid on;
 legend('U_x (Along)', 'U_y (Cross)', 'U_z (Radial)', 'Location', 'best');
 
-% PLOT 6: LINEAR OBSERVER ERROR
-figure('Name', 'PLOT 6: Transient Error Analysis', 'Color', 'w', 'Position', [300, 200, 800, 600]);
+% PLOT 7: LINEAR OBSERVER ERROR
+figure('Name', 'PLOT 7: Transient Error Analysis', 'Color', 'w', 'Position', [300, 200, 800, 600]);
 obs_error_norm = vecnorm(x_true(1:3, :) - x_hat(1:3, :));
 subplot(2,1,1);
 plot(t_vec, obs_error_norm, 'Color', c_purp, 'LineWidth', 2);
-title('Observer Error Magnitude (Linear Scale)', 'FontSize', 14);
+title('Luenberger Observer Error Magnitude (Linear Scale)', 'FontSize', 14);
 ylabel('|| Error || [m]'); grid on; xlim([0 Tsim]);
 subplot(2,1,2);
 semilogy(t_vec, obs_error_norm, 'Color', c_purp, 'LineWidth', 2);
